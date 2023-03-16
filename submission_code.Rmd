@@ -215,10 +215,9 @@ final_rand_forest_pred <- predict(final_rf_model, new_data = test_data)
 # combine predictions with id
 submission_csv <- cbind(test_data, final_rand_forest_pred) |> 
   dplyr::select(c(id, .pred)) |> 
-  rename(DIC = .pred,
-         test.id = id)
+  rename(DIC = .pred)
 
 # export csv
-write.csv(submission_csv, here("michelle_alex_submission.csv"))
+write.csv(submission_csv, here("michelle_alex_submission.csv"), row.names = FALSE)
 ```
 
