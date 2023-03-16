@@ -1,0 +1,114 @@
+---
+title: "CalCOFI Kaggle Competition"
+author: "Michelle Lam & Alexandria Reed"
+date: "2023-03-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+library(rpart) # direct engine for decision tree application
+library(caret) # meta engine for decision tree application
+library(janitor)
+library(ranger)
+library(xgboost)
+library(gridExtra)
+library(here)
+```
+
+# Read in the Data
+```{r}
+training_data <- read_csv(here("data","train.csv")) |> 
+  clean_names() |> 
+  dplyr::select(-c(x13, id))
+```
+
+# Explore the Data
+
+## Plot the data to see if the relationships between features and DIC are linear
+```{r}
+lat_plot <- ggplot(data = training_data, aes(x = lat_dec, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+lon_plot <- ggplot(data = training_data, aes(x = lon_dec, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+nitrite_plot <- ggplot(data = training_data, aes(x = no2u_m, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+# linear
+nitrate_plot <- ggplot(data = training_data, aes(x = no3u_m, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+ammonia_plot <- ggplot(data = training_data, aes(x = nh3u_m, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+reported_temp_plot<- ggplot(data = training_data, aes(x = r_temp, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+reported_depth_plot <- ggplot(data = training_data, aes(x = r_depth, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+reported_salinity_plot <- ggplot(data = training_data, aes(x = r_sal, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+dynamic_height_plot <- ggplot(data = training_data, aes(x = r_dynht, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+ammonium_plot <- ggplot(data = training_data, aes(x = r_nuts, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+# linear
+oxygen_plot <- ggplot(data = training_data, aes(x = r_oxy_micromol_kg, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+# linear
+phosphate_plot <- ggplot(data = training_data, aes(x = po4u_m, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+silicate_plot <- ggplot(data = training_data, aes(x = si_o3u_m, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+alkalinity_plot <- ggplot(data = training_data, aes(x = ta1_x, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+salinity_plot <- ggplot(data = training_data, aes(x = salinity1, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+temp_plot <- ggplot(data = training_data, aes(x = temperature_deg_c, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+# arrange side by side
+grid.arrange(lat_plot, lon_plot, nitrite_plot, nitrate_plot, ammonia_plot, 
+             reported_temp_plot, reported_depth_plot, reported_salinity_plot, 
+             dynamic_height_plot, ammonium_plot, oxygen_plot, phosphate_plot, 
+             silicate_plot, alkalinity_plot, salinity_plot, temp_plot, ncol = 4, nrow = 4)
+```
+
+## Create a correlation matrix to see which features are most highly correlated with DIC
+```{r}
+# Obtain correlation matrix for variables
+corr_mat <- cor(training_data)
+
+library(corrplot)
+
+corrplot(corr_mat, method = "shade", shade.col = NA, tl.col = "black", tl.srt = 45, addCoef.col = "black", number.cex = 0.5, cl.pos = "n", order = "original")
+```
