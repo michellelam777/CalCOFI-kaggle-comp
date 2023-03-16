@@ -168,20 +168,20 @@ rf_metrics <- rf_res |>
 rf_metrics |>
   filter(.metric == "rmse") 
 
-# Final fit using best hyperparameters
-final_rf_fit <- rf_res |>
-  select_best("rmse")
+show_best(rf_res, metric = "rmse")
+
+# store the best hyperparameter values
+best_params <- select_best(rf_res, metric = "rmse")
 
 # Finalize workflow 
 final_wf <- rf_workflow |>
-  finalize_workflow(final_rf_fit)
+  finalize_workflow(best_params)
 
 # Last Fit 
 final_fit_rf <- final_wf |>
   last_fit(dic_split)
 
 final_fit_rf |> collect_metrics()
-
 
 # Fit the final random forest model using the optimal hyperparameters
 final_rf_model <- rf_model |>
@@ -202,5 +202,23 @@ final_rmse <- final_predictions |>
 final_rmse
 ```
 
+## Load in the test dataset and predict values
+```{r}
+# load in test datset and clean
+test_data <- read_csv(here("data","test.csv")) |> 
+  clean_names() |> 
+  rename(ta1_x = ta1)
 
+# make predictions on the test dataset
+final_rand_forest_pred <- predict(final_rf_model, new_data = test_data)
+
+# combine predictions with id
+submission_csv <- cbind(test_data, final_rand_forest_pred) |> 
+  dplyr::select(c(id, .pred)) |> 
+  rename(DIC = .pred,
+         test.id = id)
+
+# export csv
+write.csv(submission_csv, here("michelle_alex_submission.csv"))
+```
 
