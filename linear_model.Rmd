@@ -1,0 +1,46 @@
+---
+title: "linear"
+author: "Alex Reed"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+##Linear model
+```{r}
+
+#read in data from submission_code.Rmd
+
+# Create a recipe
+rec <- recipe(dic ~ ., data = train_data) %>%
+  step_scale(all_predictors()) %>%
+  step_center(all_predictors())
+
+# Create a linear model specification
+lm_spec <- linear_reg() |>
+  set_engine("lm") |>
+  set_mode("regression")
+
+# Hold modelling components in a workflow
+lm_wf <- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(lm_spec)
+
+lm_fit <- lm_wf %>% 
+  fit(data = dic_train)
+
+# make predictions on the split test data 
+predictions <- lm_fit %>% predict(new_data = dic_test)
+
+# make predictions on the real test dataset
+lm_pred <- predict(lm_fit, new_data = test_data)
+
+# combine predictions with id
+submission_csv_linear <- cbind(test_data, lm_pred) |> 
+  dplyr::select(c(id, .pred)) |> 
+  rename(DIC = .pred)
+
+# export csv
+write.csv(submission_csv_linear, here("michelle_alex_submission_linear.csv"), row.names = FALSE)
+```
+
