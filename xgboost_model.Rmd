@@ -274,6 +274,6 @@ submission_csv_xgboost <- cbind(test_data, final_xgboost_pred) |>
   rename(DIC = .pred)
 
 # export csv
-write.csv(submission_csv_xgboost, here("michelle_alex_submission_xgboost.csv"), row.names = FALSE)
+#write.csv(submission_csv_xgboost, here("michelle_alex_submission_xgboost.csv"), row.names = FALSE)
 ```
 
