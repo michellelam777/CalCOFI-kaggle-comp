@@ -1,0 +1,217 @@
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+library(rpart) # direct engine for decision tree application
+library(caret) # meta engine for decision tree application
+library(janitor)
+library(ranger)
+library(xgboost)
+library(gridExtra)
+library(here)
+```
+
+# Read in the Data
+```{r}
+training_data <- read_csv(here("data","train.csv")) |> 
+  clean_names() |> 
+  dplyr::select(-c(x13, id))
+```
+
+# Explore the Data
+
+## Plot the data to see if the relationships between features and DIC are linear
+```{r}
+lat_plot <- ggplot(data = training_data, aes(x = lat_dec, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+lon_plot <- ggplot(data = training_data, aes(x = lon_dec, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+nitrite_plot <- ggplot(data = training_data, aes(x = no2u_m, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+# linear
+nitrate_plot <- ggplot(data = training_data, aes(x = no3u_m, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+ammonia_plot <- ggplot(data = training_data, aes(x = nh3u_m, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+reported_temp_plot<- ggplot(data = training_data, aes(x = r_temp, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+reported_depth_plot <- ggplot(data = training_data, aes(x = r_depth, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+reported_salinity_plot <- ggplot(data = training_data, aes(x = r_sal, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+dynamic_height_plot <- ggplot(data = training_data, aes(x = r_dynht, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+ammonium_plot <- ggplot(data = training_data, aes(x = r_nuts, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+# linear
+oxygen_plot <- ggplot(data = training_data, aes(x = r_oxy_micromol_kg, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+# linear
+phosphate_plot <- ggplot(data = training_data, aes(x = po4u_m, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+silicate_plot <- ggplot(data = training_data, aes(x = si_o3u_m, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+alkalinity_plot <- ggplot(data = training_data, aes(x = ta1_x, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+salinity_plot <- ggplot(data = training_data, aes(x = salinity1, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+temp_plot <- ggplot(data = training_data, aes(x = temperature_deg_c, y = dic)) + 
+  geom_point(color = "darkorchid") +
+  theme_minimal()
+
+# arrange side by side
+grid.arrange(lat_plot, lon_plot, nitrite_plot, nitrate_plot, ammonia_plot, 
+             reported_temp_plot, reported_depth_plot, reported_salinity_plot, 
+             dynamic_height_plot, ammonium_plot, oxygen_plot, phosphate_plot, 
+             silicate_plot, alkalinity_plot, salinity_plot, temp_plot, ncol = 4, nrow = 4)
+```
+
+**Based on the scatterplots above, we noticed that most of the relationships between the predictors and outcome are non-linear; therefore, we decided to move forward with a random forest model. Additionally, there were some observations that contained outliers and random forest models are robust to outliers.**
+
+## Create a correlation matrix to see which features are most highly correlated with DIC
+```{r}
+# Obtain correlation matrix for variables
+corr_mat <- cor(training_data)
+
+library(corrplot)
+
+corrplot(corr_mat, method = "shade", shade.col = NA, tl.col = "black", tl.srt = 45, addCoef.col = "black", number.cex = 0.5, cl.pos = "n", order = "original")
+```
+
+##Preprocessing
+```{r}
+#initial split of data
+dic_split <- initial_split(training_data, prop = 0.7)
+dic_train <- training(dic_split)
+dic_test <- testing(dic_split)
+
+#Create recipe
+recipe <- recipe(dic ~., data = dic_train) |>
+  step_normalize(all_numeric(), -all_outcomes()) |>
+  prep(dic_train) 
+```
+
+##Random Forest
+
+```{r}
+#specify model
+rf_model <- rand_forest(mtry = tune(), min_n = tune(), trees = 1000) |>
+  set_engine("ranger", 
+             importance = "permutation") |>
+  set_mode("regression")
+# Predictor variables in our model appeared to be highly correlated; thus, we chose permutation importance
+
+#create workflow
+rf_workflow <- workflow() |>
+  add_model(rf_model) |> 
+  add_recipe(recipe)
+
+#fit workflow to the training data
+rf_fit <- rf_workflow |>
+  fit(data = dic_train)
+
+#cv folds
+set.seed(160)
+cv_folds <- dic_train |>
+  vfold_cv(v = 10)
+
+rf_grid<- grid_max_entropy(finalize(mtry(), dic_test), min_n())
+
+#hypertune the model 
+rf_res <- rf_workflow %>%
+  tune_grid(resamples = cv_folds,
+            grid = rf_grid,
+            control = control_grid(save_pred = TRUE)) 
+
+# Collect performance metrics for the trained model
+rf_metrics <- rf_res |>
+  collect_metrics()
+
+# Print the RMSE metric 
+rf_metrics |>
+  filter(.metric == "rmse") 
+
+show_best(rf_res, metric = "rmse")
+
+# store the best hyperparameter values
+best_params <- select_best(rf_res, metric = "rmse")
+
+# Finalize workflow 
+final_wf <- rf_workflow |>
+  finalize_workflow(best_params)
+
+# Last Fit 
+final_fit_rf <- final_wf |>
+  last_fit(dic_split)
+
+final_fit_rf |> collect_metrics()
+
+# Fit the final random forest model using the optimal hyperparameters
+final_rf_model <- rf_model |>
+  set_args(mtry = final_rf_fit$mtry, min_n = final_rf_fit$min_n) |>
+  fit(formula = dic ~., data = dic_train)
+
+# Make predictions on the test data using the final model
+final_predictions <- predict(final_rf_model, new_data = dic_test) %>%
+  bind_cols(dic_test)
+
+# Compute the RMSE on the final predictions
+final_rmse <- final_predictions |>
+  metrics(truth = dic, estimate = .pred) |>
+  filter(.metric == "rmse") |>
+  pull(.estimate)
+
+# Print the RMSE on the final predictions
+final_rmse
+```
+
+## Load in the test dataset and predict values
+```{r}
+# load in test datset and clean
+test_data <- read_csv(here("data","test.csv")) |> 
+  clean_names() |> 
+  rename(ta1_x = ta1)
+
+# make predictions on the test dataset
+final_rand_forest_pred <- predict(final_rf_model, new_data = test_data)
+
+# combine predictions with id
+submission_csv <- cbind(test_data, final_rand_forest_pred) |> 
+  dplyr::select(c(id, .pred)) |> 
+  rename(DIC = .pred)
+
+# export csv
+write.csv(submission_csv, here("michelle_alex_submission.csv"), row.names = FALSE)
+```
+

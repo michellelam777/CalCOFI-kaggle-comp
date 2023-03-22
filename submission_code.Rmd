@@ -16,6 +16,7 @@ library(ranger)
 library(xgboost)
 library(gridExtra)
 library(here)
+library(tictoc)
 ```
 
 # Read in the Data
@@ -103,7 +104,7 @@ grid.arrange(lat_plot, lon_plot, nitrite_plot, nitrate_plot, ammonia_plot,
              silicate_plot, alkalinity_plot, salinity_plot, temp_plot, ncol = 4, nrow = 4)
 ```
 
-**Based on the scatterplots above, we noticed that most of the relationships between the predictors and outcome are non-linear; therefore, we decided to move forward with a random forest model. Additionally, there were some observations that contained outliers and random forest models are robust to outliers.**
+**Based on the scatterplots above, we noticed that most of the relationships between the predictors and outcome are non-linear; therefore, we decided to move forward with a XGBoost model. Additionally, there were some observations that contained outliers and XGBoost models are robust to outliers.**
 
 ## Create a correlation matrix to see which features are most highly correlated with DIC
 ```{r}
@@ -118,106 +119,253 @@ corrplot(corr_mat, method = "shade", shade.col = NA, tl.col = "black", tl.srt = 
 ##Preprocessing
 ```{r}
 #initial split of data
+set.seed(160)
 dic_split <- initial_split(training_data, prop = 0.7)
 dic_train <- training(dic_split)
 dic_test <- testing(dic_split)
 
-#Create recipe
+#Create a new recipe
 recipe <- recipe(dic ~., data = dic_train) |>
-  step_normalize(all_numeric(), -all_outcomes()) |>
+  step_center(all_numeric(), -all_outcomes()) |>
+  step_scale(all_numeric(), -all_outcomes()) |> 
   prep(dic_train) 
-```
-
-##Random Forest
-
-```{r}
-#specify model
-rf_model <- rand_forest(mtry = tune(), min_n = tune(), trees = 1000) |>
-  set_engine("ranger", 
-             importance = "permutation") |>
-  set_mode("regression")
-# Predictor variables in our model appeared to be highly correlated; thus, we chose permutation importance
-
-#create workflow
-rf_workflow <- workflow() |>
-  add_model(rf_model) |> 
-  add_recipe(recipe)
-
-#fit workflow to the training data
-rf_fit <- rf_workflow |>
-  fit(data = dic_train)
 
 #cv folds
 set.seed(160)
 cv_folds <- dic_train |>
   vfold_cv(v = 10)
-
-rf_grid<- grid_max_entropy(finalize(mtry(), dic_test), min_n())
-
-#hypertune the model 
-rf_res <- rf_workflow %>%
-  tune_grid(resamples = cv_folds,
-            grid = rf_grid,
-            control = control_grid(save_pred = TRUE)) 
-
-# Collect performance metrics for the trained model
-rf_metrics <- rf_res |>
-  collect_metrics()
-
-# Print the RMSE metric 
-rf_metrics |>
-  filter(.metric == "rmse") 
-
-show_best(rf_res, metric = "rmse")
-
-# store the best hyperparameter values
-best_params <- select_best(rf_res, metric = "rmse")
-
-# Finalize workflow 
-final_wf <- rf_workflow |>
-  finalize_workflow(best_params)
-
-# Last Fit 
-final_fit_rf <- final_wf |>
-  last_fit(dic_split)
-
-final_fit_rf |> collect_metrics()
-
-# Fit the final random forest model using the optimal hyperparameters
-final_rf_model <- rf_model |>
-  set_args(mtry = final_rf_fit$mtry, min_n = final_rf_fit$min_n) |>
-  fit(formula = dic ~., data = dic_train)
-
-# Make predictions on the test data using the final model
-final_predictions <- predict(final_rf_model, new_data = dic_test) %>%
-  bind_cols(dic_test)
-
-# Compute the RMSE on the final predictions
-final_rmse <- final_predictions |>
-  metrics(truth = dic, estimate = .pred) |>
-  filter(.metric == "rmse") |>
-  pull(.estimate)
-
-# Print the RMSE on the final predictions
-final_rmse
 ```
 
-## Load in the test dataset and predict values
+## See baseline model performance - no hyperparameter tuning
 ```{r}
+# baseline model performance - defualt hyperparameter values
+# specify the baseline model
+xgboost_base_model <- 
+  parsnip::boost_tree(
+    mode = "regression",
+  ) |> 
+    set_engine("xgboost")
+
+# define a workflow
+xgboost_base_wf <- 
+  workflow() |> 
+  add_model(xgboost_base_model) |> 
+  add_recipe(recipe)
+
+# fit the model and test RMSE
+xgboost_base_fit <- last_fit(xgboost_base_wf, dic_split)
+
+xgboost_base_fit |> collect_metrics()
+
+```
+
+## Specify the first model
+```{r}
+# specify the first model
+xgboost_model <- 
+  parsnip::boost_tree(
+    mode = "regression",
+    learn_rate = tune(),
+  ) |> 
+    set_engine("xgboost")
+```
+
+## Tune Learn Rate
+```{r}
+# set up tuning grid using a range of learning rate values
+learn_grid <- expand.grid(learn_rate = seq(0.0001, 0.3, length.out = 30))
+
+# define a workflow
+xgboost_wf <- 
+  workflow() |> 
+  add_model(xgboost_model) |> 
+  add_recipe(recipe)
+
+# hyperparameter tuning
+tic()
+xgboost_tuned <- tune::tune_grid(
+  object = xgboost_wf,
+  resamples = cv_folds,
+  grid = learn_grid,
+  metrics = yardstick::metric_set(rmse))
+toc()
+
+# show best learn rate
+show_best(xgboost_tuned)
+
+# store the best learning rate value
+best_learn_rate <- select_best(xgboost_tuned)
+best_learn_rate_value <- best_learn_rate$learn_rate
+```
+
+## Tune Tree Parameters
+```{r}
+# create a new model spec to tune tree parameters with learning rate set
+xgboost_model2 <- 
+  parsnip::boost_tree(
+    mode = "regression",
+    learn_rate = best_learn_rate_value,
+    trees = tune(),
+    tree_depth = tune(),
+    min_n = tune(),
+    loss_reduction = tune()
+  ) |> 
+    set_engine("xgboost")
+
+# set up a tuning grid for tree_depth, min_n, and loss_reduction
+tree_params <- parameters(tree_depth(), min_n(), loss_reduction(), trees())
+
+tree_grid<- grid_max_entropy(tree_params, 
+                             size = 30,
+                             iter = 100)
+
+# define a new workflow with the new model spec
+xgboost_wf2 <- 
+  workflow() |> 
+  add_model(xgboost_model2) |> 
+  add_recipe(recipe)
+
+# hyperparameter tuning
+tic()
+xgboost_tuned2 <- tune::tune_grid(
+  object = xgboost_wf2,
+  resamples = cv_folds,
+  grid = tree_grid,
+  metrics = yardstick::metric_set(rmse))
+toc()
+
+# show best tree parameters
+show_best(xgboost_tuned2)
+
+# store the best tree_param, tree_depth, and loss_reduction values
+best_tree_params <- select_best(xgboost_tuned2)
+best_min_n <- best_tree_params$min_n
+best_tree_depth <- best_tree_params$tree_depth
+best_loss_reduction <- best_tree_params$loss_reduction
+best_tree_n <- best_tree_params$trees
+```
+
+## Tune Stochastic Parameters
+```{r}
+# create a new  model spec to tune stochastic params (learn rate and tree params set)
+xgboost_model3 <- 
+  parsnip::boost_tree(
+    mode = "regression",
+    learn_rate = best_learn_rate_value,
+    trees = best_tree_n,
+    tree_depth = best_tree_depth,
+    min_n = best_min_n,
+    loss_reduction = best_loss_reduction,
+    mtry = tune(),
+    sample_size = tune()
+  ) |> 
+    set_engine("xgboost")
+
+# set up a tuning grid for mtry and sample_prop 
+stochastic_grid <- grid_max_entropy(finalize(mtry(), dic_train |> 
+                                    dplyr::select(-dic)), sample_prop(), 
+                                    size = 30,
+                                    iter = 100)
+
+# define a new workflow with new model spec
+xgboost_wf3 <- 
+  workflow() |> 
+  add_model(xgboost_model3) |> 
+  add_recipe(recipe)
+
+# hyperparameter tuning
+tic()
+xgboost_tuned3 <- tune::tune_grid(
+  object = xgboost_wf3,
+  resamples = cv_folds,
+  grid = stochastic_grid,
+  metrics = yardstick::metric_set(rmse))
+toc()
+
+# show best performance models and corresponding stochastic parameters
+show_best(xgboost_tuned3)
+
+# store the best mtry and sample_prop values
+best_stochastic_params <- select_best(xgboost_tuned3)
+best_mtry <- best_stochastic_params$mtry
+best_sample_size <- best_stochastic_params$sample_size
+```
+
+## Retune learn rate
+```{r}
+# create a new model spec to retune learn rate
+xgboost_model4 <- 
+  parsnip::boost_tree(
+    mode = "regression",
+    learn_rate = tune(),
+    trees = best_tree_n,
+    tree_depth = best_tree_depth,
+    min_n = best_min_n,
+    loss_reduction = best_loss_reduction,
+    mtry = best_mtry,
+    sample_size = best_sample_size
+  ) |> 
+    set_engine("xgboost")
+
+# define a new workflow with new model spec
+xgboost_wf4 <- 
+  workflow() |> 
+  add_model(xgboost_model4) |> 
+  add_recipe(recipe)
+
+# hyperparameter tuning
+tic()
+xgboost_tuned4 <- tune::tune_grid(
+  object = xgboost_wf4,
+  resamples = cv_folds,
+  grid = learn_grid,
+  metrics = yardstick::metric_set(rmse))
+toc()
+
+# show best performance models and corresponding stochastic parameters
+show_best(xgboost_tuned4)
+
+# store the best mtry and sample_prop values
+best_learn_rate_v2 <- select_best(xgboost_tuned4)
+```
+
+## Finalize the Workflow and View Model Performance
+```{r}
+# create full dataframe with hyperparameters
+all_hyperparam <- cbind(best_learn_rate_v2, best_tree_params, best_stochastic_params) |>
+  dplyr::select(-.config)
+
+# finalize the workflow
+final_xgboost_wf <- finalize_workflow(xgboost_wf4, parameters = all_hyperparam)
+
+# fit the final model on training dataset & make predictions on testing dataset
+final_xgboost_fit <- last_fit(final_xgboost_wf, dic_split)
+
+# see how well model performed
+final_xgboost_fit |>  collect_metrics()
+```
+
+## Make predictions on test data
+```{r}
+# fit final workflow to training data
+final_xgboost_fit_2 <- final_xgboost_wf |> 
+  fit(data = training_data)
+
 # load in test datset and clean
 test_data <- read_csv(here("data","test.csv")) |> 
   clean_names() |> 
   rename(ta1_x = ta1)
 
-# make predictions on the test dataset
-final_rand_forest_pred <- predict(final_rf_model, new_data = test_data)
+# make prediction on new test data
+final_xgboost_pred <- final_xgboost_fit_2 |> 
+  predict(new_data = test_data)
 
 # combine predictions with id
-submission_csv <- cbind(test_data, final_rand_forest_pred) |> 
+submission_csv_xgboost <- cbind(test_data, final_xgboost_pred) |> 
   dplyr::select(c(id, .pred)) |> 
   rename(DIC = .pred)
 
 # export csv
-write.csv(submission_csv, here("michelle_alex_submission.csv"), row.names = FALSE)
+#write.csv(submission_csv_xgboost, here("michelle_alex_submission_xgboost.csv"), row.names = FALSE)
 ```
 
